@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Underwater World</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: linear-gradient(to bottom, #001133, #003366);
+            font-family: 'Courier New', monospace;
+        }
+        
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #00ffff;
+            z-index: 100;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        
+        #inventory {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 100;
+        }
+        
+        .inventory-slot {
+            width: 60px;
+            height: 60px;
+            background: rgba(0, 50, 100, 0.8);
+            border: 2px solid #00ffff;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #00ffff;
+            font-weight: bold;
+            box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
+        }
+        
+        #instructions {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #00ffff;
+            z-index: 100;
+            text-align: right;
+            font-size: 14px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            z-index: 100;
+        }
+        
+        #crosshair::before,
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            background: #00ffff;
+            box-shadow: 0 0 5px rgba(0, 255, 255, 0.8);
+        }
+        
+        #crosshair::before {
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 2px;
+            transform: translateY(-50%);
+        }
+        
+        #crosshair::after {
+            left: 50%;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            transform: translateX(-50%);
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="ui">
+            <div>🧙‍♂️ Wizards: <span id="wizards">${gameState.wizardsCollected}/${gameState.totalWizards}</span></div>
+            <div>Depth: <span id="depth">-50m</span></div>
+            <div>Oxygen: <span id="oxygen">100%</span></div>
+            <div id="gameStatus" style="font-size: 18px; font-weight: bold; margin-top: 10px;"></div>
+        </div>
+        
+        <div id="crosshair"></div>
+        
+        <div id="instructions">
+            🎯 GOAL: Collect all 10 wizards before a whale touches you!<br><br>
+            WASD - Move<br>
+            Arrow Keys - Look Around<br>
+            Space - Swim Up<br>
+            Shift - Swim Down<br>
+            E or Right Click - Collect Wizard<br>
+            Click - Enable Mouse Look
+        </div>
+        
+        <div id="inventory">
+            <div class="inventory-slot" id="slot0">🪨</div>
+            <div class="inventory-slot" id="slot1">🪸</div>
+            <div class="inventory-slot" id="slot2">🌿</div>
+            <div class="inventory-slot" id="slot3">💎</div>
+        </div>
+    </div>
+
+    <script>
+        // Game state
+        const gameState = {
+            resources: 0,
+            oxygen: 100,
+            depth: 50,
+            selectedSlot: 0,
+            inventory: {
+                rocks: 0,
+                coral: 0,
+                kelp: 0,
+                crystals: 0
+            },
+            wizardsCollected: 0,
+            totalWizards: 10,
+            gameOver: false,
+            gameWon: false,
+            gameStartTime: Date.now()
+        };
+
+        // Three.js setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x001133);
+        renderer.fog = new THREE.Fog(0x001133, 50, 200);
+        document.getElementById('gameContainer').appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x004466, 0.6);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0x0088ff, 0.8);
+        directionalLight.position.set(50, 100, 50);
+        scene.add(directionalLight);
+
+        // Player setup
+        camera.position.set(0, -50, 0);
+        const playerSpeed = 0.5;
+        const keys = {};
+
+        // World generation
+        const worldSize = 200;
+        const chunkSize = 20;
+        const chunks = new Map();
+
+        // Materials
+        const materials = {
+            seafloor: new THREE.MeshLambertMaterial({ color: 0x4a4a2a }),
+            rock: new THREE.MeshLambertMaterial({ color: 0x666666 }),
+            coral: new THREE.MeshLambertMaterial({ color: 0xff6b6b }),
+            kelp: new THREE.MeshLambertMaterial({ color: 0x2d5a2d }),
+            crystal: new THREE.MeshLambertMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }),
+            fish: new THREE.MeshLambertMaterial({ color: 0xffa500 }),
+            whale: new THREE.MeshLambertMaterial({ color: 0x2f4f4f }),
+            wizard: new THREE.MeshLambertMaterial({ color: 0x800080 }),
+            wizardRobe: new THREE.MeshLambertMaterial({ color: 0x4b0082 })
+        };
+
+        // Living creatures arrays
+        const fish = [];
+        const whales = [];
+        const wizards = [];
+
+        // Generate seafloor
+        function generateSeafloor() {
+            const geometry = new THREE.PlaneGeometry(worldSize * 2, worldSize * 2, 50, 50);
+            const vertices = geometry.attributes.position.array;
+            
+            for (let i = 0; i < vertices.length; i += 3) {
+                vertices[i + 2] = Math.sin(vertices[i] * 0.02) * Math.cos(vertices[i + 1] * 0.02) * 5;
+            }
+            
+            geometry.attributes.position.needsUpdate = true;
+            geometry.computeVertexNormals();
+            
+            const seafloor = new THREE.Mesh(geometry, materials.seafloor);
+            seafloor.rotation.x = -Math.PI / 2;
+            seafloor.position.y = -100;
+            scene.add(seafloor);
+        }
+
+        // Generate fish schools
+        function generateFish() {
+            for (let i = 0; i < 50; i++) {
+                const fishGroup = new THREE.Group();
+                
+                // Fish body (ellipsoid)
+                const bodyGeometry = new THREE.SphereGeometry(0.8, 8, 6);
+                bodyGeometry.scale(1.5, 1, 1);
+                const body = new THREE.Mesh(bodyGeometry, materials.fish);
+                
+                // Fish tail
+                const tailGeometry = new THREE.ConeGeometry(0.5, 1, 6);
+                const tail = new THREE.Mesh(tailGeometry, materials.fish);
+                tail.position.set(-1.5, 0, 0);
+                tail.rotation.z = Math.PI / 2;
+                
+                fishGroup.add(body);
+                fishGroup.add(tail);
+                
+                fishGroup.position.set(
+                    (Math.random() - 0.5) * worldSize,
+                    -20 + Math.random() * -60,
+                    (Math.random() - 0.5) * worldSize
+                );
+                
+                fishGroup.userData = {
+                    velocity: new THREE.Vector3(
+                        (Math.random() - 0.5) * 0.1,
+                        (Math.random() - 0.5) * 0.05,
+                        (Math.random() - 0.5) * 0.1
+                    ),
+                    turnSpeed: Math.random() * 0.02 + 0.01,
+                    type: 'fish'
+                };
+                
+                fish.push(fishGroup);
+                scene.add(fishGroup);
+            }
+        }
+
+        // Generate whales (more realistic)
+        function generateWhales() {
+            for (let i = 0; i < 4; i++) {
+                const whaleGroup = new THREE.Group();
+                
+                // Main whale body (more elongated and whale-like)
+                const bodyGeometry = new THREE.SphereGeometry(3, 16, 12);
+                bodyGeometry.scale(3, 1.2, 1.5); // Much longer, slightly taller
+                const body = new THREE.Mesh(bodyGeometry, materials.whale);
+                
+                // Whale head (more bulbous)
+                const headGeometry = new THREE.SphereGeometry(2.5, 12, 8);
+                headGeometry.scale(1.5, 1.3, 1.3);
+                const head = new THREE.Mesh(headGeometry, materials.whale);
+                head.position.set(8, 0.5, 0);
+                
+                // Whale tail flukes (horizontal, realistic)
+                const tailFlukeGeometry = new THREE.BoxGeometry(0.5, 4, 8);
+                const tailFluke = new THREE.Mesh(tailFlukeGeometry, materials.whale);
+                tailFluke.position.set(-10, 0, 0);
+                
+                // Dorsal fin
+                const dorsalFinGeometry = new THREE.ConeGeometry(1, 2.5, 8);
+                const dorsalFin = new THREE.Mesh(dorsalFinGeometry, materials.whale);
+                dorsalFin.position.set(-2, 3, 0);
+                dorsalFin.rotation.x = Math.PI;
+                
+                // Pectoral fins (side fins)
+                const pectoralFinGeometry = new THREE.BoxGeometry(4, 0.8, 2);
+                const pectoralFinLeft = new THREE.Mesh(pectoralFinGeometry, materials.whale);
+                const pectoralFinRight = new THREE.Mesh(pectoralFinGeometry, materials.whale);
+                pectoralFinLeft.position.set(2, -1, 4);
+                pectoralFinRight.position.set(2, -1, -4);
+                pectoralFinLeft.rotation.z = -0.3;
+                pectoralFinRight.rotation.z = 0.3;
+                
+                // Whale belly (lighter colored)
+                const bellyGeometry = new THREE.SphereGeometry(2.8, 16, 8);
+                bellyGeometry.scale(2.8, 0.8, 1.3);
+                const belly = new THREE.Mesh(bellyGeometry, new THREE.MeshLambertMaterial({ color: 0x708090 }));
+                belly.position.set(0, -2, 0);
+                
+                whaleGroup.add(body);
+                whaleGroup.add(head);
+                whaleGroup.add(tailFluke);
+                whaleGroup.add(dorsalFin);
+                whaleGroup.add(pectoralFinLeft);
+                whaleGroup.add(pectoralFinRight);
+                whaleGroup.add(belly);
+                
+                whaleGroup.position.set(
+                    (Math.random() - 0.5) * worldSize * 0.6,
+                    -50 + Math.random() * -30,
+                    (Math.random() - 0.5) * worldSize * 0.6
+                );
+                
+                whaleGroup.userData = {
+                    velocity: new THREE.Vector3(0, 0, 0),
+                    speed: 0.08 + Math.random() * 0.04, // Slightly faster
+                    type: 'whale',
+                    chaseDistance: 60, // Larger detection range
+                    size: 12 // For collision detection
+                };
+                
+                whales.push(whaleGroup);
+                scene.add(whaleGroup);
+            }
+        }
+
+        // Generate underwater wizards
+        function generateWizards() {
+            for (let i = 0; i < 10; i++) {
+                const wizardGroup = new THREE.Group();
+                
+                // Wizard body/robe
+                const robeGeometry = new THREE.ConeGeometry(1.5, 4, 8);
+                const robe = new THREE.Mesh(robeGeometry, materials.wizardRobe);
+                robe.position.y = -2;
+                
+                // Wizard head
+                const headGeometry = new THREE.SphereGeometry(0.8, 8, 6);
+                const head = new THREE.Mesh(headGeometry, materials.wizard);
+                head.position.y = 0.5;
+                
+                // Wizard hat
+                const hatGeometry = new THREE.ConeGeometry(0.8, 2.5, 8);
+                const hat = new THREE.Mesh(hatGeometry, materials.wizardRobe);
+                hat.position.y = 2.5;
+                
+                // Magic staff
+                const staffGeometry = new THREE.CylinderGeometry(0.1, 0.1, 6);
+                const staff = new THREE.Mesh(staffGeometry, new THREE.MeshLambertMaterial({ color: 0x8b4513 }));
+                staff.position.set(1.5, -1, 0);
+                
+                // Magic orb on staff
+                const orbGeometry = new THREE.SphereGeometry(0.3, 8, 6);
+                const orb = new THREE.Mesh(orbGeometry, new THREE.MeshLambertMaterial({ 
+                    color: 0x00ffff, 
+                    transparent: true, 
+                    opacity: 0.7,
+                    emissive: 0x003333
+                }));
+                orb.position.set(1.5, 2, 0);
+                
+                wizardGroup.add(robe);
+                wizardGroup.add(head);
+                wizardGroup.add(hat);
+                wizardGroup.add(staff);
+                wizardGroup.add(orb);
+                
+                wizardGroup.position.set(
+                    (Math.random() - 0.5) * worldSize * 0.8,
+                    -30 + Math.random() * -50,
+                    (Math.random() - 0.5) * worldSize * 0.8
+                );
+                
+                wizardGroup.userData = {
+                    velocity: new THREE.Vector3(
+                        (Math.random() - 0.5) * 0.02,
+                        (Math.random() - 0.5) * 0.02,
+                        (Math.random() - 0.5) * 0.02
+                    ),
+                    bobSpeed: Math.random() * 0.02 + 0.01,
+                    bobOffset: Math.random() * Math.PI * 2,
+                    type: 'wizard',
+                    collectible: true
+                };
+                
+                wizards.push(wizardGroup);
+                scene.add(wizardGroup);
+            }
+        }
+        function generateResources() {
+            const resourceTypes = [
+                { geometry: new THREE.BoxGeometry(2, 2, 2), material: materials.rock, type: 'rocks' },
+                { geometry: new THREE.SphereGeometry(1.5, 8, 6), material: materials.coral, type: 'coral' },
+                { geometry: new THREE.CylinderGeometry(0.3, 0.3, 8), material: materials.kelp, type: 'kelp' },
+                { geometry: new THREE.OctahedronGeometry(1.5), material: materials.crystal, type: 'crystals' }
+            ];
+
+            for (let i = 0; i < 200; i++) {
+                const resourceType = resourceTypes[Math.floor(Math.random() * resourceTypes.length)];
+                const resource = new THREE.Mesh(resourceType.geometry, resourceType.material);
+                
+                resource.position.set(
+                    (Math.random() - 0.5) * worldSize,
+                    -100 + Math.random() * 80,
+                    (Math.random() - 0.5) * worldSize
+                );
+                
+                if (resourceType.type === 'kelp') {
+                    resource.position.y = -100 + Math.random() * 20;
+                }
+                
+                resource.userData = { type: resourceType.type, collectible: true };
+                scene.add(resource);
+            }
+        }
+
+        // Generate floating particles for atmosphere
+        function generateParticles() {
+            const particleGeometry = new THREE.SphereGeometry(0.1, 4, 4);
+            const particleMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x00ffff, 
+                transparent: true, 
+                opacity: 0.3 
+            });
+
+            for (let i = 0; i < 100; i++) {
+                const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+                particle.position.set(
+                    (Math.random() - 0.5) * worldSize,
+                    Math.random() * 100 - 100,
+                    (Math.random() - 0.5) * worldSize
+                );
+                particle.userData = { 
+                    velocity: new THREE.Vector3(
+                        (Math.random() - 0.5) * 0.02,
+                        Math.random() * 0.01,
+                        (Math.random() - 0.5) * 0.02
+                    )
+                };
+                scene.add(particle);
+            }
+        }
+
+        // Input handling
+        document.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            
+            // Inventory selection
+            if (e.code >= 'Digit1' && e.code <= 'Digit4') {
+                gameState.selectedSlot = parseInt(e.code.slice(-1)) - 1;
+                updateInventoryDisplay();
+            }
+            
+            // Prevent arrow keys from scrolling the page
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+                e.preventDefault();
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            keys[e.code] = false;
+        });
+
+        // Mouse controls
+        let mouseX = 0, mouseY = 0;
+        let isPointerLocked = false;
+        const lookSpeed = 0.05; // Arrow key look speed
+
+        // Try different approaches for mouse lock
+        function initMouseControls() {
+            renderer.domElement.addEventListener('click', async () => {
+                try {
+                    await renderer.domElement.requestPointerLock();
+                } catch (error) {
+                    console.log('Pointer lock not available, using arrow keys for looking');
+                }
+            });
+        }
+
+        // Handle pointer lock changes
+        document.addEventListener('pointerlockchange', () => {
+            isPointerLocked = document.pointerLockElement === renderer.domElement;
+            if (isPointerLocked) {
+                console.log('Mouse look enabled');
+            }
+        });
+
+        // Mouse movement for looking around
+        document.addEventListener('mousemove', (e) => {
+            if (isPointerLocked) {
+                mouseX -= e.movementX * 0.003;
+                mouseY = Math.max(-Math.PI/2, Math.min(Math.PI/2, mouseY - e.movementY * 0.003));
+            }
+        });
+
+        // Resource collection with E key and right-click
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'KeyE') {
+                collectNearbyResource();
+            }
+        });
+
+        renderer.domElement.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            collectNearbyResource();
+        });
+
+        function collectNearbyResource() {
+            if (gameState.gameOver) return;
+            
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            
+            const intersects = raycaster.intersectObjects(scene.children, true);
+            for (let intersect of intersects) {
+                // Check if it's a wizard
+                let targetObject = intersect.object;
+                while (targetObject.parent && targetObject.parent.type !== 'Scene') {
+                    targetObject = targetObject.parent;
+                }
+                
+                if (targetObject.userData.type === 'wizard' && targetObject.userData.collectible && intersect.distance < 8) {
+                    collectWizard(targetObject);
+                    break;
+                }
+                
+                // Regular resource collection
+                if (intersect.object.userData.collectible && intersect.distance < 10) {
+                    collectResource(intersect.object);
+                    break;
+                }
+            }
+        }
+        
+        // Collect wizard
+        function collectWizard(wizardGroup) {
+            gameState.wizardsCollected++;
+            scene.remove(wizardGroup);
+            
+            // Remove from wizards array
+            const index = wizards.indexOf(wizardGroup);
+            if (index > -1) {
+                wizards.splice(index, 1);
+            }
+            
+            // Check win condition
+            if (gameState.wizardsCollected >= gameState.totalWizards) {
+                gameState.gameWon = true;
+                gameState.gameOver = true;
+            }
+            
+            updateUI();
+        }
+
+        initMouseControls();
+
+        // Resource collection
+        function collectResource(obj) {
+            const type = obj.userData.type;
+            gameState.inventory[type]++;
+            gameState.resources++;
+            scene.remove(obj);
+            updateUI();
+        }
+
+        // Player movement
+        function updatePlayer() {
+            const direction = new THREE.Vector3();
+            
+            if (keys['KeyW']) direction.z -= 1;
+            if (keys['KeyS']) direction.z += 1;
+            if (keys['KeyA']) direction.x -= 1;
+            if (keys['KeyD']) direction.x += 1;
+            if (keys['Space']) direction.y += 1;
+            if (keys['ShiftLeft']) direction.y -= 1;
+            
+            // Arrow key looking
+            if (keys['ArrowLeft']) mouseX += lookSpeed;
+            if (keys['ArrowRight']) mouseX -= lookSpeed;
+            if (keys['ArrowUp']) mouseY = Math.min(Math.PI/2, mouseY + lookSpeed);
+            if (keys['ArrowDown']) mouseY = Math.max(-Math.PI/2, mouseY - lookSpeed);
+            
+            direction.normalize();
+            direction.multiplyScalar(playerSpeed);
+            
+            // Apply camera rotation to movement
+            direction.applyQuaternion(camera.quaternion);
+            camera.position.add(direction);
+            
+            // Update depth
+            gameState.depth = Math.abs(camera.position.y);
+            
+            // Oxygen consumption (deeper = faster consumption)
+            if (gameState.oxygen > 0) {
+                gameState.oxygen -= 0.01 * (1 + gameState.depth / 100);
+                gameState.oxygen = Math.max(0, gameState.oxygen);
+            }
+            
+            // Camera rotation
+            camera.rotation.order = 'YXZ';
+            camera.rotation.y = mouseX;
+            camera.rotation.x = mouseY;
+        }
+
+        // Animate living creatures
+        function animateCreatures() {
+            if (gameState.gameOver) return;
+            
+            // Animate fish
+            fish.forEach(fishGroup => {
+                if (!fishGroup.userData) return;
+                
+                // Random swimming behavior
+                if (Math.random() < 0.01) {
+                    fishGroup.userData.velocity.x += (Math.random() - 0.5) * 0.02;
+                    fishGroup.userData.velocity.z += (Math.random() - 0.5) * 0.02;
+                }
+                
+                // Move fish
+                fishGroup.position.add(fishGroup.userData.velocity);
+                
+                // Point fish in direction of movement
+                if (fishGroup.userData.velocity.length() > 0) {
+                    fishGroup.lookAt(
+                        fishGroup.position.x + fishGroup.userData.velocity.x,
+                        fishGroup.position.y + fishGroup.userData.velocity.y,
+                        fishGroup.position.z + fishGroup.userData.velocity.z
+                    );
+                }
+                
+                // Keep fish in bounds and near seafloor
+                if (Math.abs(fishGroup.position.x) > worldSize/2) {
+                    fishGroup.userData.velocity.x *= -1;
+                }
+                if (Math.abs(fishGroup.position.z) > worldSize/2) {
+                    fishGroup.userData.velocity.z *= -1;
+                }
+                if (fishGroup.position.y > -10) {
+                    fishGroup.userData.velocity.y = -0.02;
+                }
+                if (fishGroup.position.y < -90) {
+                    fishGroup.userData.velocity.y = 0.02;
+                }
+            });
+            
+            // Animate whales (chase player)
+            whales.forEach(whale => {
+                if (!whale.userData) return;
+                
+                const distanceToPlayer = whale.position.distanceTo(camera.position);
+                
+                // Check collision with player
+                if (distanceToPlayer < whale.userData.size && !gameState.gameOver) {
+                    gameState.gameOver = true;
+                    gameState.gameWon = false;
+                }
+                
+                if (distanceToPlayer < whale.userData.chaseDistance) {
+                    // Chase player
+                    const direction = new THREE.Vector3();
+                    direction.subVectors(camera.position, whale.position);
+                    direction.normalize();
+                    direction.multiplyScalar(whale.userData.speed);
+                    
+                    whale.userData.velocity.copy(direction);
+                    whale.position.add(whale.userData.velocity);
+                    
+                    // Point whale toward player
+                    whale.lookAt(camera.position);
+                } else {
+                    // Wander slowly
+                    if (Math.random() < 0.005) {
+                        whale.userData.velocity.set(
+                            (Math.random() - 0.5) * 0.03,
+                            (Math.random() - 0.5) * 0.015,
+                            (Math.random() - 0.5) * 0.03
+                        );
+                    }
+                    whale.position.add(whale.userData.velocity);
+                }
+                
+                // Keep whales in bounds
+                if (Math.abs(whale.position.x) > worldSize/2) {
+                    whale.position.x = Math.sign(whale.position.x) * worldSize/2;
+                    whale.userData.velocity.x *= -1;
+                }
+                if (Math.abs(whale.position.z) > worldSize/2) {
+                    whale.position.z = Math.sign(whale.position.z) * worldSize/2;
+                    whale.userData.velocity.z *= -1;
+                }
+            });
+            
+            // Animate wizards
+            wizards.forEach((wizard, index) => {
+                if (!wizard.userData) return;
+                
+                // Floating bob motion
+                const time = Date.now() * 0.001;
+                const bobOffset = Math.sin(time * wizard.userData.bobSpeed + wizard.userData.bobOffset) * 2;
+                wizard.position.y += bobOffset * 0.01;
+                
+                // Slow mysterious movement
+                wizard.position.add(wizard.userData.velocity);
+                
+                // Occasionally change direction
+                if (Math.random() < 0.003) {
+                    wizard.userData.velocity.set(
+                        (Math.random() - 0.5) * 0.03,
+                        (Math.random() - 0.5) * 0.01,
+                        (Math.random() - 0.5) * 0.03
+                    );
+                }
+                
+                // Rotate wizard slowly
+                wizard.rotation.y += 0.005;
+                
+                // Keep wizards in bounds
+                if (Math.abs(wizard.position.x) > worldSize/2) {
+                    wizard.userData.velocity.x *= -1;
+                }
+                if (Math.abs(wizard.position.z) > worldSize/2) {
+                    wizard.userData.velocity.z *= -1;
+                }
+                if (wizard.position.y > -20) {
+                    wizard.userData.velocity.y = -0.01;
+                }
+                if (wizard.position.y < -90) {
+                    wizard.userData.velocity.y = 0.01;
+                }
+                
+                // Make wizard orbs glow
+                const orb = wizard.children[4]; // The magic orb
+                if (orb) {
+                    orb.material.emissive.setScalar(0.3 + Math.sin(time * 3 + index) * 0.2);
+                }
+            });
+        }
+        function animateParticles() {
+            scene.children.forEach(child => {
+                if (child.userData.velocity) {
+                    child.position.add(child.userData.velocity);
+                    
+                    // Wrap around world
+                    if (Math.abs(child.position.x) > worldSize/2) {
+                        child.position.x = -child.position.x;
+                    }
+                    if (Math.abs(child.position.z) > worldSize/2) {
+                        child.position.z = -child.position.z;
+                    }
+                    if (child.position.y > 0) {
+                        child.position.y = -100;
+                    }
+                }
+            });
+        }
+
+        // UI updates
+        function updateUI() {
+            document.getElementById('depth').textContent = `-${Math.floor(gameState.depth)}m`;
+            document.getElementById('oxygen').textContent = `${Math.floor(gameState.oxygen)}%`;
+            document.getElementById('wizards').textContent = `${gameState.wizardsCollected}/${gameState.totalWizards}`;
+            
+            const statusEl = document.getElementById('gameStatus');
+            if (gameState.gameWon) {
+                statusEl.textContent = '🎉 YOU WIN! All wizards collected!';
+                statusEl.style.color = '#00ff00';
+            } else if (gameState.gameOver) {
+                statusEl.textContent = '💀 GAME OVER! Whale caught you!';
+                statusEl.style.color = '#ff0000';
+            } else {
+                const timeElapsed = Math.floor((Date.now() - gameState.gameStartTime) / 1000);
+                statusEl.textContent = `Time: ${timeElapsed}s - Stay away from whales!`;
+                statusEl.style.color = '#00ffff';
+            }
+        }
+
+        function updateInventoryDisplay() {
+            const slots = document.querySelectorAll('.inventory-slot');
+            slots.forEach((slot, index) => {
+                if (index === gameState.selectedSlot) {
+                    slot.style.borderColor = '#ffff00';
+                    slot.style.boxShadow = '0 0 15px rgba(255, 255, 0, 0.6)';
+                } else {
+                    slot.style.borderColor = '#00ffff';
+                    slot.style.boxShadow = '0 0 10px rgba(0, 255, 255, 0.3)';
+                }
+            });
+            
+            // Update counts
+            document.getElementById('slot0').innerHTML = `🪨<br>${gameState.inventory.rocks}`;
+            document.getElementById('slot1').innerHTML = `🪸<br>${gameState.inventory.coral}`;
+            document.getElementById('slot2').innerHTML = `🌿<br>${gameState.inventory.kelp}`;
+            document.getElementById('slot3').innerHTML = `💎<br>${gameState.inventory.crystals}`;
+        }
+
+        // Initialize world
+        generateSeafloor();
+        generateFish();
+        generateWhales();
+        generateWizards();
+        generateResources();
+        generateParticles();
+        updateInventoryDisplay();
+
+        // Game loop
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            updatePlayer();
+            animateCreatures();
+            animateParticles();
+            updateUI();
+            
+            renderer.render(scene, camera);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Start the game
+        animate();
+    </script>
+</body>
+</html>
